@@ -1,0 +1,277 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CO2 Time Series — Le Mans</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 1000px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #222;
+    }
+
+    h1 {
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      color: #666;
+      line-height: 1.6;
+    }
+
+    .kpis {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+
+    .kpi {
+      flex: 1;
+      min-width: 160px;
+      padding: 1rem;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+    }
+
+    .value {
+      color: #0d7c9e;
+      font-size: 1.6rem;
+      font-weight: bold;
+    }
+
+    .label {
+      color: #666;
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    #honesty {
+      padding: 1rem;
+      margin: 1.5rem 0;
+      border: 2px solid #c46e0a;
+      border-radius: 8px;
+      background: #faf3e8;
+      line-height: 1.6;
+    }
+
+    .chart-container {
+      position: relative;
+      height: 450px;
+      margin-top: 2rem;
+    }
+
+    #updated {
+      color: #666;
+      font-size: 0.85rem;
+      margin-top: 1rem;
+    }
+
+    @media (max-width: 600px) {
+      .chart-container {
+        height: 350px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>CO2 Time Series — Le Mans</h1>
+
+  <p class="subtitle">
+    Real atmospheric CO2 data from Open-Meteo.
+    Cleaning, smoothing and 7-day trend projection.
+  </p>
+
+  <div class="kpis" id="kpis">
+    Loading analysis...
+  </div>
+
+  <div id="honesty">
+    Loading projection limitations...
+  </div>
+
+  <div class="chart-container">
+    <canvas id="seriesChart"></canvas>
+  </div>
+
+  <p id="updated"></p>
+
+  <script>
+    fetch('data/series_analysis.json')
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Could not load series_analysis.json');
+        }
+        return response.json();
+      })
+      .then(data => {
+        const raw = data.raw || [];
+        const rollingMean = data.rolling_mean || [];
+        const expSmoothed = data.exp_smoothed || [];
+        const projection = data.projection || [];
+        const gaps = data.gaps || [];
+        const unit = data.unit || 'ppm';
+
+        if (raw.length === 0) {
+          document.getElementById('kpis').textContent =
+            'No data yet. Run Update analysis in GitHub Actions.';
+          return;
+        }
+
+        document.getElementById('kpis').innerHTML = `
+          <div class="kpi">
+            <div class="value">${raw.length}</div>
+            <div class="label">Observed Days</div>
+          </div>
+          <div class="kpi">
+            <div class="value">${gaps.length}</div>
+            <div class="label">Detected Gap Ranges</div>
+          </div>
+          <div class="kpi">
+            <div class="value">
+              ${data.trend_slope_per_day >= 0 ? '+' : ''}
+              ${data.trend_slope_per_day} ppm/day
+            </div>
+            <div class="label">Daily Trend</div>
+          </div>
+          <div class="kpi">
+            <div class="value">
+              ${raw[raw.length - 1].value} ${unit}
+            </div>
+            <div class="label">Latest CO2 Reading</div>
+          </div>
+        `;
+
+        document.getElementById('honesty').textContent =
+          'Projection limitation: ' + (data.honest_note || '');
+
+        // Use a shared date axis for historical and projected data.
+        const dates = new Map();
+
+        raw.forEach(point => {
+          dates.set(point.day, point.date);
+        });
+
+        projection.forEach(point => {
+          dates.set(point.day, point.date);
+        });
+
+        const allDays = [...dates.keys()].sort((a, b) => a - b);
+        const labels = allDays.map(day => dates.get(day));
+
+        function alignSeries(points) {
+          const values = new Map(
+            points.map(point => [point.day, point.value])
+          );
+
+          return allDays.map(day =>
+            values.has(day) ? values.get(day) : null
+          );
+        }
+
+        const datasets = [
+          {
+            label: 'Observed CO2',
+            data: alignSeries(raw),
+            borderColor: '#0d7c9e',
+            pointRadius: 2,
+            borderWidth: 2,
+            spanGaps: false
+          },
+          {
+            label: 'Rolling Mean (7 days)',
+            data: alignSeries(rollingMean),
+            borderColor: '#2e8b46',
+            pointRadius: 0,
+            borderWidth: 2,
+            spanGaps: false
+          },
+          {
+            label: 'Exponential Smoothing',
+            data: alignSeries(expSmoothed),
+            borderColor: '#8b2ea0',
+            borderDash: [3, 3],
+            pointRadius: 0,
+            borderWidth: 2,
+            spanGaps: false
+          },
+          {
+            label: '7-Day Projection (Low Confidence)',
+            data: alignSeries(projection),
+            borderColor: '#c46e0a',
+            borderDash: [7, 4],
+            pointRadius: 3,
+            borderWidth: 2,
+            spanGaps: false
+          }
+        ];
+
+        new Chart(document.getElementById('seriesChart'), {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: datasets
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'nearest',
+              axis: 'x',
+              intersect: false
+            },
+            plugins: {
+              title: {
+                display: true,
+                text: 'Atmospheric CO2: Observed, Smoothed and Projected'
+              },
+              tooltip: {
+                mode: 'index',
+                intersect: false
+              }
+            },
+            scales: {
+              x: {
+                title: {
+                  display: true,
+                  text: 'Date'
+                },
+                ticks: {
+                  maxTicksLimit: 12
+                }
+              },
+              y: {
+                title: {
+                  display: true,
+                  text: 'CO2 (ppm)'
+                }
+              }
+            }
+          }
+        });
+
+        const gapText = gaps.length
+          ? gaps.map(g => `${g.start_date} to ${g.end_date}`).join(', ')
+          : 'no missing days detected';
+
+        document.getElementById('updated').textContent =
+          `Last analyzed: ${data.generated_at} — ${gapText}`;
+      })
+      .catch(error => {
+        document.getElementById('kpis').textContent =
+          'Error loading analysis: ' + error.message;
+        console.error(error);
+      });
+  </script>
+
+</body>
+</html>
